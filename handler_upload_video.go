@@ -94,7 +94,21 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	dst.Seek(0, io.SeekStart)
+	bodypath, err := processVideoForFastStart(dst.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could convert video", err)
+		return
+	}
+	defer os.Remove(bodypath)
+
+	body, err := os.Open(bodypath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could find converted video", err)
+		return
+	}
+	defer body.Close()
+
+	body.Seek(0, io.SeekStart)
 
 	ranID := make([]byte, 32)
 	rand.Read(ranID)
@@ -104,14 +118,14 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		Bucket:      &cfg.s3Bucket,
 		Key:         &ranString,
 		ContentType: &mediaType,
-		Body:        dst,
+		Body:        body,
 	})
 	if _, err = io.Copy(dst, file); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not upload object", err)
 		return
 	}
 
-	url := fmt.Sprintf("https://%v.s3.%v.amazonaws.com/%v", cfg.s3Bucket, cfg.s3Region, ranString)
+	url := fmt.Sprintf("%v/%v", cfg.s3CfDistribution, ranString)
 	video.VideoURL = &url
 
 	err = cfg.db.UpdateVideo(video)
@@ -145,4 +159,15 @@ func getVideoAspectRatio(filePath string) (string, error) {
 	default:
 		return "other", nil
 	}
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outpath := filePath + ".processing"
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outpath)
+	err := cmd.Run()
+	if err != nil {
+		return "", err
+	}
+
+	return outpath, nil
 }
